@@ -1,0 +1,40 @@
+# Configuracion de Island
+# Para usarla: copia este archivo como "correo_island.env" (mismo nombre que
+# usaba el sistema antes) y coloca tus datos reales.
+
+# ============================================================
+# Base de datos MySQL (la misma que administras con phpMyAdmin)
+# ============================================================
+ASISTENCIA_DB_HOST=127.0.0.1
+ASISTENCIA_DB_PORT=3306
+ASISTENCIA_DB_USER=root
+ASISTENCIA_DB_PASSWORD=
+ASISTENCIA_DB_NAME=control_asistencia
+
+# ============================================================
+# Correo SMTP (alertas por correo al encargado)
+# ============================================================
+# Gmail:
+ASISTENCIA_SMTP_HOST=smtp.gmail.com
+ASISTENCIA_SMTP_PORT=587
+ASISTENCIA_SMTP_TLS=1
+ASISTENCIA_SMTP_USER=tu_correo@gmail.com
+ASISTENCIA_SMTP_PASSWORD=tu_contrasena_de_aplicacion
+ASISTENCIA_SMTP_FROM=tu_correo@gmail.com
+
+# Outlook / Hotmail:
+# ASISTENCIA_SMTP_HOST=smtp.office365.com
+# ASISTENCIA_SMTP_PORT=587
+# ASISTENCIA_SMTP_TLS=1
+# ASISTENCIA_SMTP_USER=tu_correo@outlook.com
+# ASISTENCIA_SMTP_PASSWORD=tu_contrasena
+# ASISTENCIA_SMTP_FROM=tu_correo@outlook.com
+
+# ============================================================
+# WhatsApp via CallMeBot (https://www.callmebot.com/blog/free-api-whatsapp-messages/)
+# ============================================================
+# 1. Desde el WhatsApp del encargado, agrega el numero de CallMeBot como contacto.
+# 2. Enviale el mensaje: "I allow callmebot to send me messages"
+# 3. CallMeBot respondera con una apikey personal; ponla abajo.
+ASISTENCIA_WHATSAPP_ACTIVO=1
+ASISTENCIA_WHATSAPP_APIKEY=tu_apikey_de_callmebot
