@@ -1,98 +1,107 @@
 """
 correo_notificador.py
-======================
-Envio de alertas por correo SMTP. Misma logica que la version original
-en Tkinter (soporta puerto 465 con SSL directo y 587 con STARTTLS).
+=====================
+Módulo para el envío de alertas automáticas por correo electrónico.
+Maneja de forma dinámica conexiones estándar (puerto 587 con STARTTLS)
+y conexiones seguras en la nube (puerto 465 con SSL directo).
 """
 
-from __future__ import annotations
-
 import logging
+import os
 import smtplib
 import ssl
 from email.message import EmailMessage
+from pathlib import Path
 
-logger = logging.getLogger("island.correo")
+logger = logging.getLogger(__name__)
 
-NOMBRE_SISTEMA = "Island"
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "correo_island.env"
+
+
+def _leer_config_archivo() -> dict:
+    """Lee el archivo .env local si existe."""
+    if not CONFIG_PATH.exists():
+        return {}
+    valores: dict[str, str] = {}
+    try:
+        for linea in CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+            limpia = linea.strip()
+            if not limpia or limpia.startswith("#") or "=" not in limpia:
+                continue
+            clave, valor = limpia.split("=", 1)
+            valores[clave.strip()] = valor.strip().strip('"').strip("'")
+    except OSError:
+        return {}
+    return valores
+
+
+def obtener_config_smtp() -> dict:
+    """Carga las variables desde Render o desde el archivo .env local."""
+    archivo = _leer_config_archivo()
+
+    def _valor(clave: str, defecto: str = "") -> str:
+        return os.getenv(clave, archivo.get(clave, defecto)).strip()
+
+    return {
+        "host": _valor("ASISTENCIA_SMTP_HOST", "smtp.gmail.com"),
+        "port": _valor("ASISTENCIA_SMTP_PORT", "587"),
+        "tls": _valor("ASISTENCIA_SMTP_TLS", "1"),
+        "user": _valor("ASISTENCIA_SMTP_USER", ""),
+        "password": _valor("ASISTENCIA_SMTP_PASSWORD", ""),
+        "from": _valor("ASISTENCIA_SMTP_FROM", ""),
+    }
 
 
 def enviar_correo_smtp(config: dict, mensaje: EmailMessage):
-    """Envia un mensaje ya construido usando la configuracion SMTP dada."""
-    contexto = ssl.create_default_context()
-    if int(config.get("port") or 0) == 465:
-        with smtplib.SMTP_SSL(config["host"], config["port"], timeout=15, context=contexto) as servidor:
-            if config["username"]:
-                servidor.login(config["username"], config["password"])
+    """Gestiona la conexión con el servidor SMTP según el puerto configurado."""
+    contexto_ssl = ssl.create_default_context()
+    
+    # Extraemos las variables usando .get() seguro para evitar KeyError
+    host = config.get("host", "smtp.gmail.com")
+    puerto = str(config.get("port", "587")).strip()
+    usuario = config.get("user", "")
+    password = config.get("password", "")
+    use_tls = str(config.get("tls", "1"))
+
+    # SI ES PUERTO 465: Conexión SSL implícita desde el inicio (Requerido en Render)
+    if puerto == "465":
+        logger.info("Iniciando conexión segura mediante SMTP_SSL (Puerto 465)...")
+        with smtplib.SMTP_SSL(host, int(puerto), context=contexto_ssl, timeout=15) as servidor:
+            servidor.login(usuario, password)
             servidor.send_message(mensaje)
-        return
+            
+    # SI ES OTRO PUERTO (Como el 587 de tu PC local): Conexión estándar + STARTTLS
+    else:
+        logger.info(f"Iniciando conexión estándar mediante SMTP (Puerto {puerto})...")
+        with smtplib.SMTP(host, int(puerto), timeout=15) as servidor:
+            if use_tls == "1":
+                servidor.starttls(context=contexto_ssl)
+            servidor.login(usuario, password)
+            servidor.send_message(mensaje)
 
-    with smtplib.SMTP(config["host"], config["port"], timeout=15) as servidor:
-        servidor.ehlo()
-        if config["tls"]:
-            servidor.starttls(context=contexto)
-            servidor.ehlo()
-        if config["username"]:
-            servidor.login(config["username"], config["password"])
-        servidor.send_message(mensaje)
 
+def enviar_alerta_correo(destinatario: str, asunto: str, cuerpo: str) -> bool:
+    """
+    Función principal llamada por la lógica de negocio para despachar las alertas.
+    """
+    config = obtener_config_smtp()
+    
+    if not config["user"] or not config["password"]:
+        logger.error("No se pudo enviar el correo: Credenciales SMTP incompletas en la configuración.")
+        return False
 
-def construir_mensaje_alerta(estudiante: dict, registro: dict, correo_origen: str, correo_destino: str) -> EmailMessage:
+    # Construcción del correo electrónico estructurado
     mensaje = EmailMessage()
-    nombre = f"{estudiante.get('nombre', '')} {estudiante.get('apellido', '')}".strip()
-    mensaje["Subject"] = f"{NOMBRE_SISTEMA} - Alerta de asistencia"
-    mensaje["From"] = f"{NOMBRE_SISTEMA} <{correo_origen}>"
-    mensaje["To"] = correo_destino
-    mensaje.set_content(
-        "\n".join(
-            [
-                f"{NOMBRE_SISTEMA}",
-                "Alerta de asistencia",
-                "",
-                f"Estudiante: {nombre}",
-                f"Codigo: {estudiante.get('id_estudiante', '')}",
-                f"Seccion: {estudiante.get('codigo_seccion', '')}",
-                f"Fecha: {registro.get('fecha', '')}",
-                f"Hora: {registro.get('hora', '')}",
-                f"Movimiento: {registro.get('tipo_evento', '')}",
-                f"Alerta: {registro.get('estado_alerta', '')}",
-                f"Detalle: {registro.get('detalle_alerta', '')}",
-            ]
-        )
-    )
-    return mensaje
+    mensaje["Subject"] = asunto
+    mensaje["From"] = config["from"] or config["user"]
+    mensaje["To"] = destinatario
+    mensaje.set_content(cuerpo)
 
-
-def enviar_alerta_correo(estudiante: dict, registro: dict, config: dict) -> tuple[bool, str]:
-    correo_destino = str(estudiante.get("correo_encargado", "")).strip()
-    if not correo_destino:
-        return False, "El estudiante no tiene correo de encargado registrado."
-
-    if not config["host"] or not config["username"] or not config["password"]:
-        return False, "El correo SMTP no esta configurado (host/usuario/contraseña)."
-
-    mensaje = construir_mensaje_alerta(estudiante, registro, config.get("from") or config["username"], correo_destino)
     try:
         enviar_correo_smtp(config, mensaje)
-        logger.info("Correo de alerta enviado a %s (estudiante %s).", correo_destino, estudiante.get("id_estudiante"))
-        return True, f"Se notificó a {correo_destino}."
-    except Exception as exc:  # noqa: BLE001
-        error = str(exc) or exc.__class__.__name__
-        logger.error("No se pudo enviar el correo a %s: %s", correo_destino, error, exc_info=True)
-        return False, error
-
-
-def construir_mensaje_texto_alerta(estudiante: dict, registro: dict) -> str:
-    """Texto plano de la alerta, usado tanto para WhatsApp como para
-    mostrar avisos en la interfaz."""
-    nombre = f"{estudiante.get('nombre', '')} {estudiante.get('apellido', '')}".strip()
-    icono = "🟢" if registro.get("tipo_evento") == "INGRESO" else "🔴"
-    return (
-        f"{icono} {NOMBRE_SISTEMA} - Alerta de asistencia\n"
-        f"Estudiante: {nombre}\n"
-        f"Sección: {estudiante.get('codigo_seccion', '')}\n"
-        f"Movimiento: {registro.get('tipo_evento', '')}  •  {registro.get('hora', '')}\n"
-        f"Turno: {registro.get('turno', '')}\n"
-        f"Alerta: {registro.get('estado_alerta', '')}\n"
-        f"Detalle: {registro.get('detalle_alerta', '')}"
-    )
+        logger.info(f"¡Alerta de correo enviada con éxito a {destinatario}!")
+        return True
+    except Exception as exc:
+        logger.error(f"No se pudo enviar el correo a {destinatario}: {exc}")
+        return False
