@@ -1,3 +1,8 @@
 nicegui>=3.0
 PyMySQL>=1.1
 requests>=2.31
+nicegui
+pymysql
+requests
+openpyxl
+reportlab
