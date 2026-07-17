@@ -171,6 +171,9 @@ def pagina_login():
 
 def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
     """Envía correo y WhatsApp en un hilo asíncrono seguro de NiceGUI para no bloquear la interfaz."""
+    
+    # Capturamos la sesión web del cliente actual antes de desprendernos
+    client = ui.context.client
 
     async def tarea():
         correo_destino = str(estudiante.get("correo_encargado", "")).strip()
@@ -180,7 +183,9 @@ def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
             config_correo = cargar_config_correo()
             exito, detalle = await asyncio.to_thread(enviar_alerta_correo, estudiante, registro, config_correo)
             nivel = "positive" if exito else "warning"
-            ui.notify(f"Correo: {detalle}", type=nivel, position="top-right")
+            # Forzamos la inyección visual dentro del contexto guardado del cliente
+            with client:
+                ui.notify(f"Correo: {detalle}", type=nivel, position="top-right")
 
         if telefono_destino:
             config_wa = cargar_config_whatsapp()
@@ -198,12 +203,14 @@ def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
                 )
                 exito, detalle = await asyncio.to_thread(enviar_whatsapp, telefono_destino, mensaje, config_wa["apikey"])
                 nivel = "positive" if exito else "warning"
-                ui.notify(f"WhatsApp: {detalle}", type=nivel, position="top-right")
+                with client:
+                    ui.notify(f"WhatsApp: {detalle}", type=nivel, position="top-right")
             elif not config_wa.get("apikey"):
-                ui.notify(
-                    "El estudiante tiene teléfono, pero falta configurar la apikey de CallMeBot.",
-                    type="warning", position="top-right",
-                )
+                with client:
+                    ui.notify(
+                        "El estudiante tiene teléfono, pero falta configurar la apikey de CallMeBot.",
+                        type="warning", position="top-right",
+                    )
 
     background_tasks.create(tarea())
 
@@ -1152,7 +1159,7 @@ if __name__ in {"__main__", "__mp_main__"}:
         secreto = "cambia-esta-clave-por-una-propia-y-secreta"
         logger.warning(
             "ASISTENCIA_WEB_SECRET no está configurada: se está usando una "
-            "clave de repuesto. Define ASISTENCIA_WEB_SECRET en "
+            "clave de repuesto. Define ASISTENCIA_WEB_SECRET in "
             "correo_island.env con una clave única antes de publicar el "
             "link."
         )

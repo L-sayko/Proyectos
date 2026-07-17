@@ -54,31 +54,41 @@ def obtener_config_smtp() -> dict:
 
 
 def enviar_correo_smtp(config: dict, mensaje: EmailMessage):
-    """Gestiona la conexión con el servidor SMTP según el puerto configurado."""
+    """Gestiona la conexión con el servidor SMTP según el puerto configurado con autorecuperación."""
     contexto_ssl = ssl.create_default_context()
     
-    # Extraemos las variables usando .get() seguro para evitar KeyError
     host = config.get("host", "smtp.gmail.com")
     puerto = str(config.get("port", "587")).strip()
     usuario = config.get("user", "")
     password = config.get("password", "")
     use_tls = str(config.get("tls", "1"))
 
-    # SI ES PUERTO 465: Conexión SSL implícita desde el inicio (Requerido en Render)
-    if puerto == "465":
-        logger.info("Iniciando conexión segura mediante SMTP_SSL (Puerto 465)...")
-        with smtplib.SMTP_SSL(host, int(puerto), context=contexto_ssl, timeout=15) as servidor:
-            servidor.login(usuario, password)
-            servidor.send_message(mensaje)
-            
-    # SI ES OTRO PUERTO (Como el 587 de tu PC local): Conexión estándar + STARTTLS
-    else:
-        logger.info(f"Iniciando conexión estándar mediante SMTP (Puerto {puerto})...")
-        with smtplib.SMTP(host, int(puerto), timeout=15) as servidor:
-            if use_tls == "1" or use_tls == "True":
-                servidor.starttls(context=contexto_ssl)
-            servidor.login(usuario, password)
-            servidor.send_message(mensaje)
+    try:
+        # SI ES PUERTO 465: Conexión SSL implícita desde el inicio (Requerido en Render)
+        if puerto == "465":
+            logger.info("Iniciando conexión segura mediante SMTP_SSL (Puerto 465)...")
+            with smtplib.SMTP_SSL(host, int(puerto), context=contexto_ssl, timeout=15) as servidor:
+                servidor.login(usuario, password)
+                servidor.send_message(mensaje)
+                
+        # SI ES OTRO PUERTO (Como el 587): Conexión estándar + STARTTLS
+        else:
+            logger.info(f"Iniciando conexión estándar mediante SMTP (Puerto {puerto})...")
+            with smtplib.SMTP(host, int(puerto), timeout=15) as servidor:
+                if use_tls == "1" or use_tls == "True":
+                    servidor.starttls(context=contexto_ssl)
+                servidor.login(usuario, password)
+                servidor.send_message(mensaje)
+                
+    except OSError as exc:
+        # SALVAVIDAS AUTOMÁTICO: Si el puerto configurado falla por bloqueo de red en la nube, se auto-repara usando 465 SSL
+        if puerto != "465":
+            logger.warning(f"Error de red detectado en puerto {puerto} ({exc}). Aplicando auto-fallback al Puerto 465 SSL...")
+            with smtplib.SMTP_SSL(host, 465, context=contexto_ssl, timeout=15) as servidor:
+                servidor.login(usuario, password)
+                servidor.send_message(mensaje)
+        else:
+            raise exc
 
 
 def enviar_alerta_correo(estudiante: dict, registro: dict, config_correo: dict) -> tuple[bool, str]:
@@ -94,7 +104,6 @@ def enviar_alerta_correo(estudiante: dict, registro: dict, config_correo: dict) 
         if "port" in config_correo: config["port"] = config_correo["port"]
         if "password" in config_correo: config["password"] = config_correo["password"]
         if "from" in config_correo: config["from"] = config_correo["from"]
-        # Mapeo de campos NiceGUI ('username' y booleanos de TLS) a las claves internas del módulo
         if "username" in config_correo: config["user"] = config_correo["username"]
         if "user" in config_correo: config["user"] = config_correo["user"]
         if "tls" in config_correo: config["tls"] = "1" if config_correo["tls"] else "0"
