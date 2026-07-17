@@ -1,26 +1,3 @@
-"""
-main.py
-=======
-Interfaz web del Sistema de Control de Asistencia "Island", construida con
-NiceGUI para poder compartirse por un link (en vez de la versión anterior
-de escritorio con Tkinter).
-
-Toda la lógica de negocio (reglas de horario, alertas, permisos, etc.) sigue
-viviendo sin cambios en `repository.py`. Este archivo solo se encarga de:
-  - Mostrar la interfaz (login, tabs, tablas, formularios).
-  - Conectar los botones/formularios con los métodos del repositorio.
-  - Enviar la alerta por correo (igual que antes) y ahora también por
-    WhatsApp (usando CallMeBot) cuando ocurre una alerta de asistencia.
-
-Para ejecutarlo:
-    pip install -r requirements.txt
-    python main.py
-
-Por defecto queda disponible en http://0.0.0.0:8080 y puede compartirse
-por link dentro de la red, o exponerse a internet con un túnel
-(ver README.md) o desplegándolo en un servidor.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -64,9 +41,7 @@ COLORES = {
 }
 
 # ------------------------------------------------------------------
-# Conexión compartida a la base de datos (una sola instancia para toda
-# la app; se protege con un lock porque varias personas pueden usar la
-# interfaz web al mismo tiempo).
+# Conexión compartida a la base de datos
 # ------------------------------------------------------------------
 db = DatabaseManager()
 repo = AsistenciaRepository(db)
@@ -79,9 +54,7 @@ def with_lock(fn, *args, **kwargs):
 
 
 # ------------------------------------------------------------------
-# Sesión / autenticación (una sesión por navegador, guardada en
-# app.storage.user, para poder abrir la app desde varios dispositivos
-# a la vez con el link compartido).
+# Sesión / autenticación
 # ------------------------------------------------------------------
 
 def usuario_actual() -> dict | None:
@@ -196,8 +169,7 @@ def pagina_login():
 # ------------------------------------------------------------------
 
 def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
-    """Envía correo y WhatsApp (si hay datos de contacto) en un hilo aparte
-    para no bloquear la interfaz, igual que hacía la versión de escritorio."""
+    """Envía correo y WhatsApp en un hilo aparte para no bloquear la interfaz."""
 
     def tarea():
         correo_destino = str(estudiante.get("correo_encargado", "")).strip()
@@ -240,12 +212,7 @@ def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
 # ------------------------------------------------------------------
 
 def construir_tab_asistencia():
-    # Se reserva el espacio arriba de todo para la cámara; se llena más
-    # abajo (después de definir procesar()) pero queda visualmente primero.
     slot_camara = ui.column().classes("w-full")
-
-    # Campo de apoyo: el flujo normal es 100% automático con la cámara,
-    # pero se conserva por si se necesita digitar un código a mano.
     campo_id = ui.input("Código / NIE (opcional, por si falla la cámara)").props("dark outlined").classes("w-full")
 
     ultimo_procesado = {"codigo": None, "ts": 0.0}
@@ -265,9 +232,6 @@ def construir_tab_asistencia():
             limpiar()
             return
 
-        # Evita procesar el mismo código dos veces si la cámara lo vuelve a
-        # leer por error en los siguientes segundos (esto es lo que hacía
-        # que la app pareciera "trabarse").
         ahora = time.monotonic()
         if codigo == ultimo_procesado["codigo"] and (ahora - ultimo_procesado["ts"]) < 4.0:
             return
@@ -329,9 +293,6 @@ def construir_tab_asistencia():
 
     campo_id.on("keydown.enter", procesar)
 
-    # ------------------------------------------------------------------
-    # Cámara arriba de todo, siempre activa (sin botones que tocar).
-    # ------------------------------------------------------------------
     with slot_camara:
         with ui.card().classes("island-card p-6 w-full"):
             ui.label("LECTOR QR — SIEMPRE ACTIVO").classes("island-titulo text-lg")
@@ -394,16 +355,7 @@ def construir_tab_asistencia():
     construir_panel_permisos_pendientes(compacto=True)
 
 
-
-
 def _construir_lector_qr(campo_id, procesar_callback):
-    """Escáner de código QR usando la cámara del navegador (html5-qrcode).
-
-    Se activa solo apenas carga la página (sin tocar botones), se queda
-    escaneando de forma continua, y evita 'trabarse' pausando 1.5s cada vez
-    que reconoce un código para no disparar decenas de lecturas iguales por
-    segundo mientras el carnet sigue frente a la cámara.
-    """
     contenedor_id = "qr-reader"
     ui.add_head_html(
         '<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>'
@@ -440,19 +392,17 @@ def _construir_lector_qr(campo_id, procesar_callback):
                 gain.connect(ctx.destination);
                 osc.start();
                 osc.stop(ctx.currentTime + (exito ? 0.2 : 0.4));
-            }} catch (err) {{ /* algunos navegadores requieren un clic previo; se ignora */ }}
+            }} catch (err) {{ }}
         }};
 
         window._islandOnScan = function(decodedText) {{
             const ahora = Date.now();
             if (decodedText === window._islandUltimoCodigo && (ahora - window._islandUltimoTiempo) < 4000) {{
-                return;  // ignora relecturas del mismo carnet en los siguientes 4s
+                return;
             }}
             window._islandUltimoCodigo = decodedText;
             window._islandUltimoTiempo = ahora;
             emitEvent("qr_scanned", decodedText);
-            // pausa breve para no reprocesar el mismo cuadro muchas veces y
-            // evitar que la interfaz se vea "trabada"
             if (window._islandQr) {{
                 try {{ window._islandQr.pause(true); }} catch (e) {{}}
                 setTimeout(() => {{
@@ -516,10 +466,6 @@ def _construir_lector_qr(campo_id, procesar_callback):
             }}
         }};
 
-        // Vigilante: se ejecuta cada pocos segundos desde Python y
-        // reinicia la cámara sola si por algún motivo se detuvo (cambio
-        // de pestaña, el navegador la pausó, error temporal, etc.), para
-        // que quede realmente "siempre encendida".
         window.islandVigilarCamara = function() {{
             if (!window._islandQr) {{
                 window.islandAutoIniciar();
@@ -527,7 +473,6 @@ def _construir_lector_qr(campo_id, procesar_callback):
             }}
             try {{
                 const estado = window._islandQr.getState();
-                // Html5QrcodeScannerState: 1=NOT_STARTED, 2=SCANNING, 3=PAUSED
                 if (estado === 1) {{
                     window._islandQr = null;
                     window.islandAutoIniciar();
@@ -541,8 +486,6 @@ def _construir_lector_qr(campo_id, procesar_callback):
     )
 
     def _primer_arg(evento) -> str:
-        """NiceGUI entrega evento.args como una lista con un valor por cada
-        argumento pasado a emitEvent(); aquí siempre mandamos uno solo."""
         valor = evento.args
         if isinstance(valor, list):
             valor = valor[0] if valor else ""
@@ -567,10 +510,7 @@ def _construir_lector_qr(campo_id, procesar_callback):
     ui.on("qr_error", on_error)
     ui.on("qr_status", on_status)
 
-    # Se inicia sola apenas el navegador termina de conectarse, sin que
-    # nadie tenga que tocar ningún botón.
     ui.timer(0.8, lambda: ui.run_javascript("window.islandAutoIniciar()"), once=True)
-    # Y se vigila cada 5 segundos para que quede realmente "siempre encendida".
     ui.timer(5.0, lambda: ui.run_javascript("window.islandVigilarCamara()"))
 
     with ui.row().classes("gap-2 mt-2"):
@@ -584,8 +524,6 @@ def _construir_lector_qr(campo_id, procesar_callback):
     ).classes("island-sub text-xs mt-2 text-center")
 
 
-# funciones globales que se reasignan al construir cada tab, para poder
-# refrescar tablas desde otros lugares (ej. al registrar una asistencia)
 def actualizar_tabla_movimientos():
     pass
 
@@ -594,9 +532,6 @@ def actualizar_estadisticas_rapidas():
     pass
 
 
-# La pestaña de "Permisos" completa y el panel rápido dentro de "Marcar
-# asistencia" necesitan refrescarse a la vez, por eso aquí se guarda una
-# lista de funciones de refresco en vez de una sola.
 _permisos_listeners: list = []
 
 
@@ -604,14 +539,11 @@ def actualizar_permisos_pendientes():
     for fn in list(_permisos_listeners):
         try:
             fn()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Error refrescando panel de permisos.")
 
 
 def construir_panel_permisos_pendientes(compacto: bool = False):
-    """Lista de permisos pendientes con aprobar/rechazar. Se usa tanto en la
-    pestaña 'Marcar asistencia' (versión compacta) como en la pestaña
-    'Permisos' completa."""
     columnas = [
         {"name": "fecha", "label": "Fecha", "field": "fecha", "align": "left"},
         {"name": "nombre_completo", "label": "Estudiante", "field": "nombre_completo", "align": "left"},
@@ -875,7 +807,7 @@ def construir_tab_registros():
         try:
             fecha_fila = datetime.strptime(fila["fecha"], "%d/%m/%Y").date()
         except (ValueError, TypeError, KeyError):
-            return True  # si no se puede interpretar la fecha, no se descarta el registro
+            return True
         if desde:
             try:
                 if fecha_fila < datetime.strptime(desde, "%Y-%m-%d").date():
@@ -1088,7 +1020,7 @@ def construir_tab_usuarios():
 
 
 # ------------------------------------------------------------------
-# Tab: Configuración (solo ADMIN) — correo, WhatsApp y base de datos
+# Tab: Configuración (solo ADMIN)
 # ------------------------------------------------------------------
 
 def construir_tab_configuracion():
@@ -1221,7 +1153,7 @@ if __name__ in {"__main__", "__mp_main__"}:
             "ASISTENCIA_WEB_SECRET no está configurada: se está usando una "
             "clave de repuesto. Define ASISTENCIA_WEB_SECRET en "
             "correo_island.env con una clave única antes de publicar el "
-            "link (ver README.md, sección 7)."
+            "link."
         )
 
     ui.run(
