@@ -29,6 +29,7 @@ import io
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -36,7 +37,7 @@ from nicegui import app, ui
 
 from db_connection import DatabaseManager
 from repository import AsistenciaRepository
-from config_notificaciones import cargar_config_correo, cargar_config_whatsapp, cargar_config_db, guardar_config
+from config_notificaciones import cargar_config_correo, cargar_config_whatsapp, cargar_config_db, guardar_config, leer_config_bruta
 from correo_notificador import enviar_alerta_correo
 from whatsapp_notificador import enviar_whatsapp, normalizar_telefono
 from reportes import generar_excel, generar_pdf
@@ -239,83 +240,105 @@ def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
 # ------------------------------------------------------------------
 
 def construir_tab_asistencia():
-    with ui.row().classes("w-full gap-4 flex-wrap"):
-        with ui.card().classes("island-card p-6").style("min-width: 340px"):
-            ui.label("MARCAR ASISTENCIA").classes("island-titulo text-lg")
-            ui.label("Escanea el QR o escribe el código del estudiante.").classes("island-sub text-sm mb-3")
+    # Se reserva el espacio arriba de todo para la cámara; se llena más
+    # abajo (después de definir procesar()) pero queda visualmente primero.
+    slot_camara = ui.column().classes("w-full")
 
-            campo_id = ui.input("Código / NIE").props("dark outlined autofocus").classes("w-full text-2xl")
-            lbl_resultado = ui.label("").classes("island-texto whitespace-pre-line mt-3")
+    # Campo de apoyo: el flujo normal es 100% automático con la cámara,
+    # pero se conserva por si se necesita digitar un código a mano.
+    campo_id = ui.input("Código / NIE (opcional, por si falla la cámara)").props("dark outlined").classes("w-full")
 
-            def limpiar():
-                campo_id.value = ""
+    ultimo_procesado = {"codigo": None, "ts": 0.0}
 
-            def procesar():
-                codigo = (campo_id.value or "").strip()
-                if not codigo:
-                    lbl_resultado.style(f"color: {COLORES['resalte']}")
-                    lbl_resultado.text = "Ingresa un código válido."
-                    return
-                if not codigo.isdigit():
-                    lbl_resultado.style(f"color: {COLORES['advertencia']}")
-                    lbl_resultado.text = "El código debe contener solo números."
-                    return
+    def limpiar():
+        campo_id.value = ""
 
-                auth = usuario_actual() or {}
-                estudiante = with_lock(repo.buscar_estudiante, codigo)
-                if estudiante is None:
-                    lbl_resultado.style(f"color: {COLORES['advertencia']}")
-                    lbl_resultado.text = f"NIE no registrado\nCódigo: {codigo}\nNo existe un estudiante activo con este identificador."
-                    limpiar()
-                    return
+    def procesar():
+        codigo = (campo_id.value or "").strip()
+        if not codigo:
+            lbl_resultado.style(f"color: {COLORES['resalte']}")
+            lbl_resultado.text = "Ingresa un código válido."
+            return
+        if not codigo.isdigit():
+            lbl_resultado.style(f"color: {COLORES['advertencia']}")
+            lbl_resultado.text = "El código debe contener solo números."
+            limpiar()
+            return
 
-                registro = with_lock(repo.registrar_movimiento, codigo, auth.get("usuario", ""))
-                if registro is None:
-                    lbl_resultado.style(f"color: {COLORES['advertencia']}")
-                    lbl_resultado.text = "No se pudo guardar el movimiento."
-                    limpiar()
-                    return
+        # Evita procesar el mismo código dos veces si la cámara lo vuelve a
+        # leer por error en los siguientes segundos (esto es lo que hacía
+        # que la app pareciera "trabarse").
+        ahora = time.monotonic()
+        if codigo == ultimo_procesado["codigo"] and (ahora - ultimo_procesado["ts"]) < 4.0:
+            return
+        ultimo_procesado["codigo"] = codigo
+        ultimo_procesado["ts"] = ahora
 
-                tipo = registro["tipo_evento"]
-                alerta = registro.get("estado_alerta") or "NORMAL"
-                if alerta != "NORMAL":
-                    color = COLORES["resalte"]
-                elif tipo == "INGRESO":
-                    color = COLORES["exito"]
-                else:
-                    color = COLORES["advertencia"]
-                icono = "●" if tipo == "INGRESO" else "■"
-                nombre = f"{estudiante['nombre']} {estudiante['apellido']}"
-                correo_encargado = str(estudiante.get("correo_encargado", "")).strip()
+        auth = usuario_actual() or {}
+        estudiante = with_lock(repo.buscar_estudiante, codigo)
+        if estudiante is None:
+            lbl_resultado.style(f"color: {COLORES['advertencia']}")
+            lbl_resultado.text = f"⚠ NIE NO REGISTRADO\nCódigo leído: {codigo}\nNo existe un estudiante activo con este identificador."
+            ui.notify(f"Código no registrado: {codigo}", type="negative", position="top-right", timeout=5000)
+            ui.run_javascript("window.islandBeep && window.islandBeep(false)")
+            limpiar()
+            return
 
-                lbl_resultado.style(f"color: {color}")
-                lbl_resultado.text = (
-                    f"{icono} {tipo}\n"
-                    f"{nombre}\n"
-                    f"Sección: {estudiante['codigo_seccion']}  •  {registro['hora']}\n"
-                    f"Turno: {registro.get('turno', '')}  •  {alerta}\n"
-                    f"Permiso: {registro.get('permiso_evidencia') or 'NO APLICA'}\n"
-                    f"Estado actual: {registro.get('estado_actual', '')}\n"
-                    f"Encargado: {correo_encargado or 'sin correo'}"
-                )
+        registro = with_lock(repo.registrar_movimiento, codigo, auth.get("usuario", ""))
+        if registro is None:
+            lbl_resultado.style(f"color: {COLORES['advertencia']}")
+            lbl_resultado.text = "No se pudo guardar el movimiento."
+            ui.run_javascript("window.islandBeep && window.islandBeep(false)")
+            limpiar()
+            return
 
-                if alerta != "NORMAL":
-                    ui.notify(f"Alerta de asistencia: {alerta} — {nombre}", type="warning", position="top-right", timeout=6000)
-                    _notificar_alerta_en_hilo(estudiante, registro)
-                    actualizar_permisos_pendientes()
+        tipo = registro["tipo_evento"]
+        alerta = registro.get("estado_alerta") or "NORMAL"
+        if alerta != "NORMAL":
+            color = COLORES["resalte"]
+        elif tipo == "INGRESO":
+            color = COLORES["exito"]
+        else:
+            color = COLORES["advertencia"]
+        icono = "●" if tipo == "INGRESO" else "■"
+        nombre = f"{estudiante['nombre']} {estudiante['apellido']}"
+        correo_encargado = str(estudiante.get("correo_encargado", "")).strip()
 
-                limpiar()
-                actualizar_tabla_movimientos()
-                actualizar_estadisticas_rapidas()
+        lbl_resultado.style(f"color: {color}")
+        lbl_resultado.text = (
+            f"{icono} {tipo}\n"
+            f"{nombre}\n"
+            f"Sección: {estudiante['codigo_seccion']}  •  {registro['hora']}\n"
+            f"Turno: {registro.get('turno', '')}  •  {alerta}\n"
+            f"Permiso: {registro.get('permiso_evidencia') or 'NO APLICA'}\n"
+            f"Estado actual: {registro.get('estado_actual', '')}\n"
+            f"Encargado: {correo_encargado or 'sin correo'}"
+        )
+        ui.run_javascript(f"window.islandBeep && window.islandBeep({'false' if alerta != 'NORMAL' else 'true'})")
 
-            campo_id.on("keydown.enter", procesar)
-            ui.button("REGISTRAR", on_click=procesar).classes("w-full mt-3").props("color=primary")
+        if alerta != "NORMAL":
+            ui.notify(f"⚠ Alerta de asistencia: {alerta} — {nombre}", type="warning", position="top-right", timeout=6000)
+            _notificar_alerta_en_hilo(estudiante, registro)
+            actualizar_permisos_pendientes()
+        else:
+            ui.notify(f"{tipo} registrado: {nombre}", type="positive", position="top-right", timeout=3000)
 
-        with ui.card().classes("island-card p-6").style("min-width: 340px"):
-            ui.label("LECTOR QR (cámara del navegador)").classes("island-titulo text-lg")
-            ui.label("Permite el acceso a la cámara para escanear el carnet.").classes("island-sub text-sm mb-3")
+        limpiar()
+        actualizar_tabla_movimientos()
+        actualizar_estadisticas_rapidas()
+
+    campo_id.on("keydown.enter", procesar)
+
+    # ------------------------------------------------------------------
+    # Cámara arriba de todo, siempre activa (sin botones que tocar).
+    # ------------------------------------------------------------------
+    with slot_camara:
+        with ui.card().classes("island-card p-6 w-full"):
+            ui.label("LECTOR QR — SIEMPRE ACTIVO").classes("island-titulo text-lg")
+            ui.label("Apunta el carnet a la cámara: el registro se hace solo, no necesitas tocar nada.").classes("island-sub text-sm mb-3")
             _construir_lector_qr(campo_id, procesar)
 
+    with ui.row().classes("w-full gap-4 flex-wrap mt-4"):
         with ui.card().classes("island-card p-4 flex-1").style("min-width: 320px"):
             ui.label("ESTADO DE HOY").classes("island-titulo text-md mb-2")
             with ui.row().classes("gap-6"):
@@ -342,6 +365,11 @@ def construir_tab_asistencia():
             global actualizar_estadisticas_rapidas
             actualizar_estadisticas_rapidas = render_stats
 
+        with ui.card().classes("island-card p-6 flex-1").style("min-width: 340px"):
+            ui.label("ÚLTIMO RESULTADO").classes("island-titulo text-lg")
+            ui.label("(esto se llena solo cada vez que se lee un carnet)").classes("island-sub text-xs mb-2")
+            lbl_resultado = ui.label("Esperando el primer código...").classes("island-texto whitespace-pre-line")
+
     ui.label("ÚLTIMOS MOVIMIENTOS").classes("island-titulo text-md mt-4")
     columnas_mov = [
         {"name": "hora", "label": "Hora", "field": "hora", "align": "left"},
@@ -366,14 +394,15 @@ def construir_tab_asistencia():
     construir_panel_permisos_pendientes(compacto=True)
 
 
+
+
 def _construir_lector_qr(campo_id, procesar_callback):
     """Escáner de código QR usando la cámara del navegador (html5-qrcode).
 
-    Muestra un cuadro visible con el video de la cámara, permite elegir
-    entre varias cámaras si el equipo tiene más de una, y explica los
-    errores más comunes (sin HTTPS, permiso denegado, sin cámara).
-    Al detectar un código lo coloca en el campo de texto y dispara el
-    mismo registro que si se hubiera escrito a mano.
+    Se activa solo apenas carga la página (sin tocar botones), se queda
+    escaneando de forma continua, y evita 'trabarse' pausando 1.5s cada vez
+    que reconoce un código para no disparar decenas de lecturas iguales por
+    segundo mientras el carnet sigue frente a la cámara.
     """
     contenedor_id = "qr-reader"
     ui.add_head_html(
@@ -382,23 +411,68 @@ def _construir_lector_qr(campo_id, procesar_callback):
 
     with ui.column().classes("items-center w-full"):
         ui.html(
-            f'<div id="{contenedor_id}" style="width:280px;height:280px;'
+            f'<div id="{contenedor_id}" style="width:100%;max-width:420px;height:340px;'
             f'border:2px dashed {COLORES["borde"]};border-radius:12px;overflow:hidden;'
             f'background:#0b141c;display:flex;align-items:center;justify-content:center;">'
             f'<span style="color:{COLORES["texto_secundario"]};font-size:12px;'
-            f'text-align:center;padding:16px">Presiona "Detectar cámaras" y luego '
-            f'"Iniciar cámara"</span></div>'
+            f'text-align:center;padding:16px">Iniciando cámara automáticamente...</span></div>'
         )
-
-    boton_estado = ui.label("Cámara detenida.").classes("island-sub text-xs mt-2 text-center w-full")
-    selector_camara = ui.select({}, label="Cámara detectada").props("dark outlined").classes("w-full mt-2")
-    selector_camara.visible = False
+        boton_estado = ui.label("Iniciando cámara...").classes("island-sub text-xs mt-2 text-center w-full")
 
     ui.run_javascript(
         f"""
         window._islandQr = window._islandQr || null;
+        window._islandUltimoCodigo = null;
+        window._islandUltimoTiempo = 0;
 
-        window.islandListarCamaras = async function() {{
+        window.islandBeep = function(exito) {{
+            try {{
+                const ContextAudio = window.AudioContext || window.webkitAudioContext;
+                const ctx = new ContextAudio();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.frequency.value = exito ? 880 : 220;
+                osc.type = "sine";
+                gain.gain.setValueAtTime(0.001, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.01);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (exito ? 0.18 : 0.35));
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + (exito ? 0.2 : 0.4));
+            }} catch (err) {{ /* algunos navegadores requieren un clic previo; se ignora */ }}
+        }};
+
+        window._islandOnScan = function(decodedText) {{
+            const ahora = Date.now();
+            if (decodedText === window._islandUltimoCodigo && (ahora - window._islandUltimoTiempo) < 4000) {{
+                return;  // ignora relecturas del mismo carnet en los siguientes 4s
+            }}
+            window._islandUltimoCodigo = decodedText;
+            window._islandUltimoTiempo = ahora;
+            emitEvent("qr_scanned", decodedText);
+            // pausa breve para no reprocesar el mismo cuadro muchas veces y
+            // evitar que la interfaz se vea "trabada"
+            if (window._islandQr) {{
+                try {{ window._islandQr.pause(true); }} catch (e) {{}}
+                setTimeout(() => {{
+                    try {{ if (window._islandQr) window._islandQr.resume(); }} catch (e) {{}}
+                }}, 1500);
+            }}
+        }};
+
+        window._islandIniciarCon = function(config) {{
+            window._islandQr = new Html5Qrcode("{contenedor_id}");
+            return window._islandQr.start(
+                config,
+                {{ fps: 10, qrbox: {{ width: 240, height: 240 }} }},
+                window._islandOnScan,
+                (errorMessage) => {{}}
+            );
+        }};
+
+        window.islandAutoIniciar = async function() {{
+            if (window._islandQr) return;
             if (!window.isSecureContext) {{
                 emitEvent("qr_error", "Tu navegador bloquea la cámara porque esta página no usa HTTPS (ni es 'localhost'). Abre la app como https:// o desde http://localhost:8080 en esta misma computadora.");
                 return;
@@ -407,35 +481,60 @@ def _construir_lector_qr(campo_id, procesar_callback):
                 emitEvent("qr_error", "Este navegador no permite acceder a la cámara.");
                 return;
             }}
+            emitEvent("qr_status", "Pidiendo permiso de cámara...");
+            try {{
+                await window._islandIniciarCon({{ facingMode: "environment" }});
+                emitEvent("qr_status", "Cámara activa. Escaneando de forma continua...");
+                return;
+            }} catch (err) {{
+                window._islandQr = null;
+            }}
             try {{
                 const camaras = await Html5Qrcode.getCameras();
                 if (!camaras || camaras.length === 0) {{
                     emitEvent("qr_error", "No se detectó ninguna cámara en este dispositivo.");
                     return;
                 }}
-                emitEvent("qr_cameras", JSON.stringify(camaras.map(c => ({{id: c.id, label: c.label || c.id}}))));
+                await window._islandIniciarCon(camaras[0].id);
+                emitEvent("qr_status", "Cámara activa (" + (camaras[0].label || "cámara detectada") + "). Escaneando...");
             }} catch (err) {{
+                window._islandQr = null;
                 emitEvent("qr_error", "No se pudo acceder a la cámara (¿diste permiso?): " + String(err));
             }}
         }};
 
-        window.islandIniciarQr = function(camaraId) {{
-            if (window._islandQr) return;
-            window._islandQr = new Html5Qrcode("{contenedor_id}");
-            const config = camaraId ? camaraId : {{ facingMode: "environment" }};
-            window._islandQr.start(
-                config,
-                {{ fps: 10, qrbox: 220 }},
-                (decodedText) => {{ emitEvent("qr_scanned", decodedText); }},
-                (errorMessage) => {{}}
-            ).catch((err) => {{ emitEvent("qr_error", "No se pudo iniciar la cámara: " + String(err)); }});
-        }};
-        window.islandDetenerQr = function() {{
+        window.islandReiniciarQr = function() {{
+            const arrancar = () => window.islandAutoIniciar();
             if (window._islandQr) {{
                 window._islandQr.stop().then(() => {{
                     window._islandQr.clear();
                     window._islandQr = null;
-                }}).catch(() => {{ window._islandQr = null; }});
+                    arrancar();
+                }}).catch(() => {{ window._islandQr = null; arrancar(); }});
+            }} else {{
+                arrancar();
+            }}
+        }};
+
+        // Vigilante: se ejecuta cada pocos segundos desde Python y
+        // reinicia la cámara sola si por algún motivo se detuvo (cambio
+        // de pestaña, el navegador la pausó, error temporal, etc.), para
+        // que quede realmente "siempre encendida".
+        window.islandVigilarCamara = function() {{
+            if (!window._islandQr) {{
+                window.islandAutoIniciar();
+                return;
+            }}
+            try {{
+                const estado = window._islandQr.getState();
+                // Html5QrcodeScannerState: 1=NOT_STARTED, 2=SCANNING, 3=PAUSED
+                if (estado === 1) {{
+                    window._islandQr = null;
+                    window.islandAutoIniciar();
+                }}
+            }} catch (err) {{
+                window._islandQr = null;
+                window.islandAutoIniciar();
             }}
         }};
         """
@@ -460,42 +559,28 @@ def _construir_lector_qr(campo_id, procesar_callback):
         boton_estado.style(f"color:{COLORES['advertencia']}")
         boton_estado.text = _primer_arg(evento)
 
-    def on_cameras(evento):
-        import json as _json
-        camaras = _json.loads(_primer_arg(evento))
-        opciones = {c["id"]: c["label"] for c in camaras}
-        selector_camara.options = opciones
-        selector_camara.value = next(iter(opciones), None)
-        selector_camara.visible = True
-        selector_camara.update()
+    def on_status(evento):
         boton_estado.style(f"color:{COLORES['texto_primario']}")
-        boton_estado.text = f"Se detectaron {len(opciones)} cámara(s). Elige una y presiona Iniciar."
+        boton_estado.text = _primer_arg(evento)
 
     ui.on("qr_scanned", on_scanned)
     ui.on("qr_error", on_error)
-    ui.on("qr_cameras", on_cameras)
+    ui.on("qr_status", on_status)
 
-    def iniciar():
-        camara_id = selector_camara.value
-        argumento = f'"{camara_id}"' if camara_id else "null"
-        ui.run_javascript(f"window.islandIniciarQr({argumento})")
-        boton_estado.style(f"color:{COLORES['texto_primario']}")
-        boton_estado.text = "Cámara activa, apunta al código QR."
-
-    def detener():
-        ui.run_javascript("window.islandDetenerQr()")
-        boton_estado.style(f"color:{COLORES['texto_secundario']}")
-        boton_estado.text = "Cámara detenida."
+    # Se inicia sola apenas el navegador termina de conectarse, sin que
+    # nadie tenga que tocar ningún botón.
+    ui.timer(0.8, lambda: ui.run_javascript("window.islandAutoIniciar()"), once=True)
+    # Y se vigila cada 5 segundos para que quede realmente "siempre encendida".
+    ui.timer(5.0, lambda: ui.run_javascript("window.islandVigilarCamara()"))
 
     with ui.row().classes("gap-2 mt-2"):
-        ui.button("Detectar cámaras", on_click=lambda: ui.run_javascript("window.islandListarCamaras()")).props("outline color=primary")
-        ui.button("Iniciar cámara", on_click=iniciar).props("outline color=primary")
-        ui.button("Detener", on_click=detener).props("outline color=negative")
+        ui.button("Reiniciar cámara", on_click=lambda: ui.run_javascript("window.islandReiniciarQr()")).props("outline color=primary dense")
 
     ui.label(
-        "Nota: la cámara solo funciona si abres la app con https:// o desde "
-        "http://localhost en esta misma computadora; los navegadores bloquean "
-        "la cámara en links http:// normales por seguridad."
+        "La cámara queda escaneando todo el tiempo: solo acerca el carnet, "
+        "espera el sonido de confirmación y listo. Si no arranca sola, usa "
+        "'Reiniciar cámara'. Recuerda: solo funciona con https:// o desde "
+        "http://localhost en esta computadora."
     ).classes("island-sub text-xs mt-2 text-center")
 
 
@@ -751,9 +836,15 @@ def construir_tab_estadisticas():
 # ------------------------------------------------------------------
 
 def construir_tab_registros():
+    ui.label("BUSCADOR DE REPORTES").classes("island-titulo text-lg")
     with ui.row().classes("w-full gap-4 items-end flex-wrap"):
         filtro_texto = ui.input("Buscar (código, nombre o sección)").props("dark outlined").classes("flex-1")
+        filtro_desde = ui.input("Desde").props("dark outlined type=date").classes("w-40")
+        filtro_hasta = ui.input("Hasta").props("dark outlined type=date").classes("w-40")
         boton_buscar = ui.button("Buscar").props("color=primary")
+        boton_limpiar = ui.button("Limpiar filtros").props("outline color=primary")
+
+    with ui.row().classes("w-full gap-2 flex-wrap mt-2"):
         boton_csv = ui.button("Exportar CSV").props("outline color=primary")
         boton_excel = ui.button("Exportar Excel").props("outline color=primary")
         boton_pdf = ui.button("Vista previa PDF").props("outline color=primary")
@@ -771,9 +862,33 @@ def construir_tab_registros():
         {"name": "detalle_alerta", "label": "Detalle", "field": "detalle_alerta", "align": "left"},
     ]
     tabla = ui.table(columns=columnas, rows=[], row_key="id_asistencia", pagination=25).classes("w-full island-card mt-3")
+    lbl_total = ui.label("").classes("island-sub text-xs mt-1")
     contenedor_preview_pdf = ui.column().classes("w-full mt-4")
 
     filas_actuales: list[dict] = []
+
+    def _fecha_en_rango(fila: dict) -> bool:
+        desde = (filtro_desde.value or "").strip()
+        hasta = (filtro_hasta.value or "").strip()
+        if not desde and not hasta:
+            return True
+        try:
+            fecha_fila = datetime.strptime(fila["fecha"], "%d/%m/%Y").date()
+        except (ValueError, TypeError, KeyError):
+            return True  # si no se puede interpretar la fecha, no se descarta el registro
+        if desde:
+            try:
+                if fecha_fila < datetime.strptime(desde, "%Y-%m-%d").date():
+                    return False
+            except ValueError:
+                pass
+        if hasta:
+            try:
+                if fecha_fila > datetime.strptime(hasta, "%Y-%m-%d").date():
+                    return False
+            except ValueError:
+                pass
+        return True
 
     def cargar():
         nonlocal filas_actuales
@@ -786,9 +901,17 @@ def construir_tab_registros():
                 or texto in str(f.get("nombre_completo", "")).lower()
                 or texto in str(f.get("codigo_seccion", "")).lower()
             ]
+        filas = [f for f in filas if _fecha_en_rango(f)]
         filas_actuales = filas
         tabla.rows = filas
         tabla.update()
+        lbl_total.text = f"{len(filas)} registro(s) encontrados."
+
+    def limpiar_filtros():
+        filtro_texto.value = ""
+        filtro_desde.value = ""
+        filtro_hasta.value = ""
+        cargar()
 
     def exportar_csv():
         if not filas_actuales:
@@ -853,7 +976,10 @@ def construir_tab_registros():
         )
 
     boton_buscar.on_click(cargar)
+    boton_limpiar.on_click(limpiar_filtros)
     filtro_texto.on("keydown.enter", cargar)
+    filtro_desde.on("change", cargar)
+    filtro_hasta.on("change", cargar)
     boton_csv.on_click(exportar_csv)
     boton_excel.on_click(exportar_excel)
     boton_pdf.on_click(vista_previa_pdf)
@@ -1054,28 +1180,30 @@ def pagina_principal():
 
             ui.button("Salir", on_click=salir).props("flat color=white")
 
+    admin = es_admin()
+
     with ui.tabs().classes("w-full") as tabs:
         t_asistencia = ui.tab("Marcar asistencia")
-        t_estudiantes = ui.tab("Estudiantes")
-        t_estadisticas = ui.tab("Estadísticas")
-        t_registros = ui.tab("Registros")
         t_permisos = ui.tab("Permisos")
-        if es_admin():
+        t_registros = ui.tab("Registros y reportes")
+        if admin:
+            t_estudiantes = ui.tab("Estudiantes")
+            t_estadisticas = ui.tab("Estadísticas")
             t_usuarios = ui.tab("Usuarios")
             t_config = ui.tab("Configuración")
 
     with ui.tab_panels(tabs, value=t_asistencia).classes("w-full"):
         with ui.tab_panel(t_asistencia):
             construir_tab_asistencia()
-        with ui.tab_panel(t_estudiantes):
-            construir_tab_estudiantes()
-        with ui.tab_panel(t_estadisticas):
-            construir_tab_estadisticas()
-        with ui.tab_panel(t_registros):
-            construir_tab_registros()
         with ui.tab_panel(t_permisos):
             construir_tab_permisos()
-        if es_admin():
+        with ui.tab_panel(t_registros):
+            construir_tab_registros()
+        if admin:
+            with ui.tab_panel(t_estudiantes):
+                construir_tab_estudiantes()
+            with ui.tab_panel(t_estadisticas):
+                construir_tab_estadisticas()
             with ui.tab_panel(t_usuarios):
                 construir_tab_usuarios()
             with ui.tab_panel(t_config):
@@ -1084,11 +1212,23 @@ def pagina_principal():
 
 if __name__ in {"__main__", "__mp_main__"}:
     puerto = int(os.getenv("ASISTENCIA_WEB_PORT", "8080"))
+    secreto = os.getenv("ASISTENCIA_WEB_SECRET", "").strip()
+    if not secreto:
+        secreto = leer_config_bruta().get("ASISTENCIA_WEB_SECRET", "").strip()
+    if not secreto:
+        secreto = "cambia-esta-clave-por-una-propia-y-secreta"
+        logger.warning(
+            "ASISTENCIA_WEB_SECRET no está configurada: se está usando una "
+            "clave de repuesto. Define ASISTENCIA_WEB_SECRET en "
+            "correo_island.env con una clave única antes de publicar el "
+            "link (ver README.md, sección 7)."
+        )
+
     ui.run(
         title=NOMBRE_SISTEMA,
         host="0.0.0.0",
         port=puerto,
-        storage_secret="cambia-esta-clave-por-una-propia-y-secreta",
+        storage_secret=secreto,
         dark=True,
         reload=False,
     )

@@ -59,12 +59,13 @@ def _config_mysql() -> dict:
     def _valor(clave: str, defecto: str = "") -> str:
         return os.getenv(clave, archivo.get(clave, defecto)).strip()
 
+    # Se actualizaron los valores por defecto con las credenciales de tu servidor Aiven
     return {
-        "host": _valor("ASISTENCIA_DB_HOST", "127.0.0.1"),
-        "port": int(_valor("ASISTENCIA_DB_PORT", "3306") or 3306),
-        "user": _valor("ASISTENCIA_DB_USER", "root"),
-        "password": _valor("ASISTENCIA_DB_PASSWORD", ""),
-        "database": _valor("ASISTENCIA_DB_NAME", "control_asistencia"),
+        "host": _valor("ASISTENCIA_DB_HOST", "mysql-ae9db5e-proyects-08.j.aivencloud.com"),
+        "port": int(_valor("ASISTENCIA_DB_PORT", "19539") or 19539),
+        "user": _valor("ASISTENCIA_DB_USER", "avnadmin"),
+        "password": _valor("ASISTENCIA_DB_PASSWORD", "TU_CONTRASEÑA_DE_AIVEN"),
+        "database": _valor("ASISTENCIA_DB_NAME", "defaultdb"),
     }
 
 
@@ -109,6 +110,7 @@ class DatabaseManager:
                 charset="utf8mb4",
                 cursorclass=pymysql.cursors.DictCursor,
                 autocommit=False,
+                ssl={"ssl": {}}  # <--- ¡OBLIGATORIO PARA AIVEN! Habilita el cifrado seguro SSL
             )
             with self._connection.cursor() as cursor:
                 # Permite que las consultas con "||" (concatenacion estilo

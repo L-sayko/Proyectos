@@ -32,6 +32,13 @@ def _leer_config_local() -> dict:
     return valores
 
 
+def leer_config_bruta() -> dict:
+    """Devuelve todas las claves tal cual están en correo_island.env,
+    sin transformar. Útil para leer valores que no tienen su propio
+    "cargar_config_*" (ej. ASISTENCIA_WEB_SECRET)."""
+    return _leer_config_local()
+
+
 def cargar_config_correo() -> dict:
     archivo = _leer_config_local()
     host = os.getenv("ASISTENCIA_SMTP_HOST", archivo.get("ASISTENCIA_SMTP_HOST", "")).strip()

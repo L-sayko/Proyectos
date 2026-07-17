@@ -1,3 +1,4 @@
+-- Active: 1784258962065@@mysql-ae9db5e-proyects-08.j.aivencloud.com@19539@defaultdb
 -- ============================================================
 -- SISTEMA DE CONTROL DE INGRESO Y SALIDA - MySQL / phpMyAdmin
 -- Equivalente del schema.sql original (SQLite) para poder

@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 
 from db_connection import DatabaseManager
+from seguridad import es_hash, hash_password, verificar_password
 
 
 class AsistenciaRepository:
@@ -680,13 +681,28 @@ class AsistenciaRepository:
 
     def verificar_credenciales(self, usuario: str, password: str) -> dict | None:
         query = """
-            SELECT id_usuario, usuario, nombre_completo, rol
+            SELECT id_usuario, usuario, password, nombre_completo, rol
             FROM usuarios
             WHERE usuario = ?
-              AND password = ?
               AND activo = 1
         """
-        return self._db.obtener_uno(query, (usuario.strip(), password))
+        fila = self._db.obtener_uno(query, (usuario.strip(),))
+        if fila is None:
+            return None
+        if not verificar_password(password, fila.get("password", "")):
+            return None
+
+        # Si la contraseña todavía estaba en texto plano (cuentas antiguas
+        # o las de ejemplo del esquema), se cifra automáticamente ahora que
+        # ya se validó, sin que el usuario tenga que hacer nada.
+        if not es_hash(fila.get("password", "")):
+            self._db.ejecutar_query(
+                "UPDATE usuarios SET password = ? WHERE id_usuario = ?",
+                (hash_password(password), fila["id_usuario"]),
+            )
+
+        fila.pop("password", None)
+        return fila
 
     def obtener_usuarios(self) -> list[dict]:
         query = """
@@ -706,7 +722,7 @@ class AsistenciaRepository:
             VALUES (?, ?, ?, ?)
         """
         return self._db.ejecutar_query(
-            query, (usuario.strip().lower(), password.strip(), nombre_completo.strip(), rol)
+            query, (usuario.strip().lower(), hash_password(password.strip()), nombre_completo.strip(), rol)
         )
 
     def eliminar_usuario(self, id_usuario: int) -> bool:

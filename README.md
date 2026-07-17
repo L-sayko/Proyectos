@@ -101,17 +101,85 @@ Usuarios por defecto (igual que antes):
 - `admin` / `admin123` (rol ADMIN)
 - `profesor` / `profesor123` (rol PROFESOR)
 
-**Recuerda cambiar `storage_secret` dentro de `main.py`** (línea final,
-`ui.run(...)`) por una clave propia antes de compartir el link públicamente.
+**Recuerda configurar `ASISTENCIA_WEB_SECRET`** en `correo_island.env`
+(clave larga y única) antes de compartir el link públicamente — ver la
+sección 7 de este README.
 
-## 4. Qué cambia para quien usaba la app de escritorio
 
-- El lector de QR con cámara USB de escritorio (OpenCV) se reemplazó por un
-  lector de QR que usa la **cámara del navegador** (funciona en celular,
-  tablet o laptop con cámara, botón "Iniciar cámara" en la pestaña
-  "Marcar asistencia"). También puedes seguir digitando el código a mano,
-  igual que antes.
-- Los reportes en PDF hechos a mano se reemplazaron por exportación a **CSV**
-  desde la pestaña "Registros" (se abre perfecto en Excel/Google Sheets).
-- Todo lo demás (reglas de horario, alertas, permisos, roles, correo) es
-  igual que en la versión de escritorio.
+
+## 4. Lector de código QR — cámara siempre encendida
+
+La cámara **no necesita botones ni supervisión**: apenas se abre la pestaña
+"Marcar asistencia" (la que abre por defecto), pide permiso una sola vez y
+queda arriba de todo, escaneando de forma continua y automática todo el
+tiempo. Cuando lee un carnet:
+1. Suena un "beep" (agudo si el registro salió normal, grave si hubo una
+   alerta o el código no existe).
+2. Se registra automáticamente en la base de datos — no hay que tocar nada.
+3. Se pausa 1.5 segundos antes de volver a escanear, para no registrar el
+   mismo carnet muchas veces si se queda frente a la cámara.
+4. Un vigilante interno revisa cada 5 segundos que la cámara siga activa y
+   la reinicia sola si el navegador la detuvo por cualquier motivo (cambio
+   de pestaña, suspensión del equipo, etc.), para que quede realmente
+   "siempre encendida" sin que nadie tenga que estar pendiente.
+
+Si aun así hace falta, hay un botón "Reiniciar cámara" debajo del cuadro.
+El campo de texto para digitar el código a mano se conserva como respaldo,
+pero no hace falta usarlo en el uso normal del día a día.
+
+**Los navegadores solo permiten la cámara en páginas seguras**: `https://...`
+o `http://localhost` / `http://127.0.0.1` en la misma computadora. Si abres
+la app desde otro dispositivo con la IP de tu red (ej.
+`http://192.168.1.21:8080`), el navegador bloqueará la cámara — no es un
+bug, es una restricción de seguridad del navegador. Para usarlo desde
+celulares/tablets necesitas HTTPS:
+  - `ngrok http 8080` (te da un link `https://...` al instante), o
+  - un reverse proxy (Nginx/Caddy) con certificado (Let's Encrypt es gratis), o
+  - un hosting que ya dé HTTPS (Railway, Render, etc.).
+
+## 5. Permisos y roles
+
+- En la pestaña **"Marcar asistencia"** aparece un panel de "Permisos
+  pendientes" con Aprobar/Rechazar, sin cambiar de pestaña.
+- **ADMIN**: ve todas las pestañas (Marcar asistencia, Permisos, Registros y
+  reportes, Estudiantes, Estadísticas, Usuarios, Configuración).
+- **PROFESOR**: ve solo 3 pestañas — **Marcar asistencia** (registro),
+  **Permisos** (aprobar/rechazar) y **Registros y reportes** (Excel/PDF).
+  No ve Estudiantes, Estadísticas, Usuarios ni Configuración.
+- La sesión queda guardada en el navegador: si ya iniciaste sesión antes,
+  al volver a abrir la app entra directo sin pedir usuario/contraseña de
+  nuevo (esto es normal, no un error). Para ver la pantalla de login de
+  nuevo, usa el botón **"Salir"** en la esquina superior derecha.
+- Las contraseñas de los usuarios ahora se guardan **cifradas** (hash con
+  sal, no en texto plano) en la base de datos, incluso las que ya tenías
+  creadas (`admin123`, `profesor123` siguen funcionando igual, la app las
+  cifra automáticamente la primera vez que alguien inicia sesión con ellas).
+
+## 6. Reportes en Excel y PDF (con vista previa, impresión y buscador)
+
+En la pestaña **"Registros y reportes"** hay un buscador con:
+- Texto libre (código, nombre o sección).
+- Rango de fechas (desde / hasta).
+
+Y con el resultado filtrado puedes:
+- **Exportar Excel**: genera y descarga un `.xlsx` con los registros filtrados.
+- **Vista previa PDF**: genera el PDF, lo descarga y además lo muestra
+  incrustado justo debajo de la tabla para revisarlo sin abrir otro programa.
+- **Imprimir**: genera el PDF, lo abre en una pestaña nueva y dispara
+  directamente el diálogo de impresión del navegador.
+- **Exportar CSV**: para abrir en Excel/Google Sheets rápidamente.
+
+## 7. Notas de producción (para revender / desplegar en serio)
+
+- Cambia `ASISTENCIA_WEB_SECRET` en `correo_island.env` (o la variable de
+  entorno del mismo nombre) por una clave larga y única antes de publicar
+  el link; si no la defines, la app genera una advertencia y usa una clave
+  de repuesto (no recomendado para producción).
+- Cambia las contraseñas de `admin` y `profesor` desde la pestaña Usuarios
+  apenas lo instales para un cliente nuevo.
+- Sirve la app detrás de HTTPS (ver sección 5) tanto por la cámara como por
+  seguridad general del login.
+- Revisa `requirements.txt`: ya quedaron fijadas las versiones mínimas
+  probadas de cada librería.
+
+
