@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
 import io
@@ -10,7 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from nicegui import app, ui
+from nicegui import app, ui, background_tasks
 
 from db_connection import DatabaseManager
 from repository import AsistenciaRepository
@@ -169,15 +170,15 @@ def pagina_login():
 # ------------------------------------------------------------------
 
 def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
-    """Envía correo y WhatsApp en un hilo aparte para no bloquear la interfaz."""
+    """Envía correo y WhatsApp en un hilo asíncrono seguro de NiceGUI para no bloquear la interfaz."""
 
-    def tarea():
+    async def tarea():
         correo_destino = str(estudiante.get("correo_encargado", "")).strip()
         telefono_destino = str(estudiante.get("telefono_encargado", "")).strip()
 
         if correo_destino:
             config_correo = cargar_config_correo()
-            exito, detalle = enviar_alerta_correo(estudiante, registro, config_correo)
+            exito, detalle = await asyncio.to_thread(enviar_alerta_correo, estudiante, registro, config_correo)
             nivel = "positive" if exito else "warning"
             ui.notify(f"Correo: {detalle}", type=nivel, position="top-right")
 
@@ -195,7 +196,7 @@ def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
                     f"Alerta: {registro.get('estado_alerta', '')}\n"
                     f"Detalle: {registro.get('detalle_alerta', '')}"
                 )
-                exito, detalle = enviar_whatsapp(telefono_destino, mensaje, config_wa["apikey"])
+                exito, detalle = await asyncio.to_thread(enviar_whatsapp, telefono_destino, mensaje, config_wa["apikey"])
                 nivel = "positive" if exito else "warning"
                 ui.notify(f"WhatsApp: {detalle}", type=nivel, position="top-right")
             elif not config_wa.get("apikey"):
@@ -204,7 +205,7 @@ def _notificar_alerta_en_hilo(estudiante: dict, registro: dict):
                     type="warning", position="top-right",
                 )
 
-    threading.Thread(target=tarea, daemon=True).start()
+    background_tasks.create(tarea())
 
 
 # ------------------------------------------------------------------
