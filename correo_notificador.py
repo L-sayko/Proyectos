@@ -75,33 +75,81 @@ def enviar_correo_smtp(config: dict, mensaje: EmailMessage):
     else:
         logger.info(f"Iniciando conexión estándar mediante SMTP (Puerto {puerto})...")
         with smtplib.SMTP(host, int(puerto), timeout=15) as servidor:
-            if use_tls == "1":
+            if use_tls == "1" or use_tls == "True":
                 servidor.starttls(context=contexto_ssl)
             servidor.login(usuario, password)
             servidor.send_message(mensaje)
 
 
-def enviar_alerta_correo(destinatario: str, asunto: str, cuerpo: str) -> bool:
+def enviar_alerta_correo(estudiante: dict, registro: dict, config_correo: dict) -> tuple[bool, str]:
     """
     Función principal llamada por la lógica de negocio para despachar las alertas.
+    Adapta los diccionarios de entrada para compilar dinámicamente el correo.
+    Retorna una tupla (éxito, detalle) requerida por la interfaz de NiceGUI.
     """
+    # 1. Unificar configuración base con los datos pasados desde la UI de NiceGUI
     config = obtener_config_smtp()
+    if config_correo:
+        if "host" in config_correo: config["host"] = config_correo["host"]
+        if "port" in config_correo: config["port"] = config_correo["port"]
+        if "password" in config_correo: config["password"] = config_correo["password"]
+        if "from" in config_correo: config["from"] = config_correo["from"]
+        # Mapeo de campos NiceGUI ('username' y booleanos de TLS) a las claves internas del módulo
+        if "username" in config_correo: config["user"] = config_correo["username"]
+        if "user" in config_correo: config["user"] = config_correo["user"]
+        if "tls" in config_correo: config["tls"] = "1" if config_correo["tls"] else "0"
     
-    if not config["user"] or not config["password"]:
-        logger.error("No se pudo enviar el correo: Credenciales SMTP incompletas en la configuración.")
-        return False
+    # 2. Validaciones iniciales críticas
+    destinatario = str(estudiante.get("correo_encargado", "")).strip()
+    if not destinatario:
+        return False, "El estudiante no posee un correo electrónico de encargado registrado."
+        
+    if not config.get("user") or not config.get("password"):
+        logger.error("No se pudo enviar el correo: Credenciales SMTP ausentes o incompletas.")
+        return False, "Credenciales SMTP incompletas en la configuración del sistema."
 
-    # Construcción del correo electrónico estructurado
+    # 3. Procesamiento y formateo de los datos del estudiante
+    nombre_alumno = f"{estudiante.get('nombre', '')} {estudiante.get('apellido', '')}".strip()
+    tipo_evento = registro.get("tipo_evento", "MOVIMIENTO").upper()
+    hora = registro.get("hora", "")
+    seccion = estudiante.get("codigo_seccion", "")
+    turno = registro.get("turno", "")
+    alerta = registro.get("estado_alerta", "NORMAL")
+    detalle_alerta = registro.get("detalle_alerta", "")
+
+    # Diseñar el asunto según el tipo de movimiento
+    icono = "🟢" if tipo_evento == "INGRESO" else "🔴"
+    asunto = f"{icono} Island - Alerta de {tipo_evento.capitalize()}: {nombre_alumno}"
+
+    # Construcción limpia y legible del cuerpo en texto plano
+    cuerpo = (
+        f"SISTEMA DE CONTROL DE ASISTENCIA 'ISLAND'\n"
+        f"{'='*45}\n\n"
+        f"Estimado encargado, se le notifica que se ha registrado un nuevo movimiento:\n\n"
+        f"  • Estudiante: {nombre_alumno}\n"
+        f"  • Sección: {seccion}\n"
+        f"  • Movimiento: {tipo_evento}\n"
+        f"  • Hora de registro: {hora}\n"
+        f"  • Turno: {turno}\n"
+        f"  • Estado: {alerta}\n"
+        f"  • Detalle: {detalle_alerta}\n\n"
+        f"{'='*45}\n"
+        f"Este es un mensaje automatizado generado por el sistema Island. Por favor, no responda a este correo."
+    )
+
+    # 4. Construcción física del objeto EmailMessage
     mensaje = EmailMessage()
     mensaje["Subject"] = asunto
     mensaje["From"] = config["from"] or config["user"]
     mensaje["To"] = destinatario
     mensaje.set_content(cuerpo)
 
+    # 5. Ejecución del despacho seguro
     try:
         enviar_correo_smtp(config, mensaje)
         logger.info(f"¡Alerta de correo enviada con éxito a {destinatario}!")
-        return True
+        return True, f"Correo enviado exitosamente a {destinatario}"
     except Exception as exc:
-        logger.error(f"No se pudo enviar el correo a {destinatario}: {exc}")
-        return False
+        error_msg = str(exc)
+        logger.error(f"No se pudo enviar el correo a {destinatario}: {error_msg}")
+        return False, f"Error del servidor SMTP: {error_msg}"
