@@ -68,13 +68,22 @@ def cargar_config_whatsapp():
 
 
 def cargar_config_db():
-    """Retorna la configuración de la base de datos desde las variables de entorno."""
+    """
+    Retorna la configuración de la base de datos desde las variables de entorno,
+    eliminando espacios accidentales y asegurando el formato correcto del puerto.
+    """
+    port_env = os.getenv("ASISTENCIA_DB_PORT", "3306")
+    try:
+        port = int(port_env) if port_env else 3306
+    except ValueError:
+        port = 3306
+
     return {
-        "host": os.getenv("ASISTENCIA_DB_HOST", ""),
-        "port": os.getenv("ASISTENCIA_DB_PORT", ""),
-        "user": os.getenv("ASISTENCIA_DB_USER", ""),
-        "password": os.getenv("ASISTENCIA_DB_PASSWORD", ""),
-        "database": os.getenv("ASISTENCIA_DB_NAME", "")
+        "host": os.getenv("ASISTENCIA_DB_HOST", "").strip(),
+        "port": port,
+        "user": os.getenv("ASISTENCIA_DB_USER", "").strip(),
+        "password": os.getenv("ASISTENCIA_DB_PASSWORD", "").strip(),
+        "database": os.getenv("ASISTENCIA_DB_NAME", "").strip()
     }
 
 
@@ -89,5 +98,5 @@ def guardar_config(tipo, datos):
 
 
 def leer_config_bruta():
-    """Lee la configuración bruta para evitar fallos de importación."""
+    """Retorna la configuración bruta para evitar fallos de importación."""
     return {}
